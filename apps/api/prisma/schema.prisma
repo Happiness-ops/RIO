@@ -1,0 +1,319 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// RIO AI — Prisma Schema
+// Single source of truth for all database tables, enums, and relationships.
+//
+// Rules:
+//   - Never edit migration files manually after they have been applied.
+//   - Always run `npx prisma migrate dev --name <description>` to generate new migrations.
+//   - Never run `prisma db push` in production — always use `prisma migrate deploy`.
+// ─────────────────────────────────────────────────────────────────────────────
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ENUMS
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum AuthProvider {
+  firebase
+  auth0
+}
+
+enum GoalType {
+  short_term
+  long_term
+}
+
+enum FrequencyType {
+  daily
+  weekly
+  custom
+}
+
+enum CheckinStatus {
+  completed
+  missed
+  skipped
+}
+
+enum PriorityType {
+  critical
+  essential
+  important
+  nice_to_have
+  someday
+}
+
+enum TaskStatus {
+  todo
+  in_progress
+  completed
+  cancelled
+}
+
+enum TriggerType {
+  streak_risk         // Active streak but missed yesterday
+  streak_recovery     // Streak was reset in the last 48 hours
+  completion_dropoff  // 7-day completion rate dropped >20%
+  momentum            // 5+ consecutive days completed
+  fallback            // No specific rule matched
+}
+
+enum CommunityRole {
+  member
+  moderator
+  admin
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CORE USER TABLES
+// ─────────────────────────────────────────────────────────────────────────────
+
+model User {
+  id           String       @id @default(uuid()) @db.Uuid
+  email        String       @unique
+  authProvider AuthProvider
+  timezone     String       @default("UTC")       // IANA timezone string e.g. "Africa/Lagos"
+  isVerified   Boolean      @default(false)
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+
+  // Relations
+  profile              UserProfile?
+  goals                Goal[]
+  habits               Habit[]
+  tasks                Task[]
+  insights             AiInsight[]
+  pushSubscriptions    UserPushSubscription[]
+  communityMemberships CommunityMember[]
+
+  @@map("users")
+}
+
+model UserProfile {
+  id                   String   @id @default(uuid()) @db.Uuid
+  userId               String   @unique @db.Uuid
+  fullName             String?  @db.VarChar(255)
+  avatarUrl            String?
+  bio                  String?  @db.Text
+  onboardingCompleted  Boolean  @default(false)
+  // Preferences stored as flexible JSON:
+  // { notificationsEnabled: boolean, theme: "light"|"dark", weekStartsOn: 0|1 }
+  preferences          Json     @default("{}")
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  // Relations
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("user_profiles")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PRODUCTIVITY TABLES
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Goal {
+  id          String    @id @default(uuid()) @db.Uuid
+  userId      String    @db.Uuid
+  title       String    @db.VarChar(255)
+  description String?   @db.Text
+  type        GoalType  @default(short_term)
+  startDate   DateTime? @db.Date
+  endDate     DateTime? @db.Date
+  isArchived  Boolean   @default(false)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  // Relations
+  user   User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  habits Habit[]
+  tasks  Task[]
+
+  @@index([userId])
+  @@map("goals")
+}
+
+model Habit {
+  id     String @id @default(uuid()) @db.Uuid
+  userId String @db.Uuid
+  goalId String @db.Uuid
+
+  title   String        @db.VarChar(255)
+  // frequency determines the schedule type
+  frequency        FrequencyType @default(daily)
+  // frequencyDetails stores schedule specifics as JSON:
+  // daily:   {}
+  // weekly:  { "daysOfWeek": [1,3,5] }  (0=Sun, 1=Mon, ... 6=Sat)
+  // custom:  { "intervalDays": 2 }
+  frequencyDetails Json          @default("{}")
+  isArchived       Boolean       @default(false)
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+
+  // Relations
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  goal     Goal      @relation(fields: [goalId], references: [id], onDelete: Cascade)
+  checkins Checkin[]
+  streak   Streak?
+
+  @@index([userId])
+  @@index([goalId])
+  @@map("habits")
+}
+
+model Checkin {
+  id        String        @id @default(uuid()) @db.Uuid
+  habitId   String        @db.Uuid
+  status    CheckinStatus
+  // logDate is a DATE (not datetime) — one record per habit per calendar day
+  logDate   DateTime      @db.Date
+  note      String?       @db.Text     // Optional user note on the check-in
+  createdAt DateTime      @default(now())
+
+  // Relations
+  habit Habit @relation(fields: [habitId], references: [id], onDelete: Cascade)
+
+  // Enforce: one check-in per habit per day at the database level
+  @@unique([habitId, logDate])
+  @@index([habitId])
+  @@map("checkins")
+}
+
+model Streak {
+  // habitId is both the PK and the FK — one streak record per habit, always
+  habitId        String    @id @db.Uuid
+  currentStreak  Int       @default(0)
+  longestStreak  Int       @default(0)
+  // lastCheckinDate used by Midnight Sweep to detect missed days
+  lastCheckinDate DateTime? @db.Date
+  updatedAt      DateTime  @updatedAt
+
+  // Relations
+  habit Habit @relation(fields: [habitId], references: [id], onDelete: Cascade)
+
+  @@map("streaks")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// AI INSIGHTS
+// ─────────────────────────────────────────────────────────────────────────────
+
+model AiInsight {
+  id          String      @id @default(uuid()) @db.Uuid
+  userId      String      @db.Uuid
+  triggerType TriggerType
+  // headline: short subject line — max 8 words e.g. "Your Streak Is At Risk!"
+  headline    String      @db.VarChar(120)
+  // message:  the full motivational body — max 40 words
+  message     String      @db.Text
+  // cta:      call-to-action button label — max 4 words e.g. "Check In Now"
+  cta         String      @db.VarChar(80)
+  isRead      Boolean     @default(false)
+  generatedAt DateTime    @default(now())
+
+  // Relations
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  // Composite index for the daily insight query (most recent per user per day)
+  @@index([userId, generatedAt(sort: Desc)])
+  @@map("ai_insights")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TASKS (Web MVP)
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Task {
+  id          String       @id @default(uuid()) @db.Uuid
+  userId      String       @db.Uuid
+  // goalId is optional — tasks can exist independently of a goal
+  goalId      String?      @db.Uuid
+  title       String       @db.VarChar(255)
+  description String?      @db.Text
+  priority    PriorityType @default(important)
+  // position determines order within the same priority tier
+  // Lower number = higher in list. Reset to 0 on priority change.
+  position    Int          @default(0)
+  status      TaskStatus   @default(todo)
+  dueDate     DateTime?    @db.Date
+  // completedAt is set automatically when status changes to 'completed'
+  completedAt DateTime?
+  isArchived  Boolean      @default(false)
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  // Relations
+  user User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  goal Goal? @relation(fields: [goalId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  // Composite index for the default task list query (ordered by priority then position)
+  @@index([userId, priority, position])
+  @@map("tasks")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// BROWSER PUSH NOTIFICATIONS (Web MVP)
+// ─────────────────────────────────────────────────────────────────────────────
+
+model UserPushSubscription {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @db.Uuid
+  // endpoint is the unique URL provided by the browser's push service
+  endpoint  String   @unique
+  // p256dh and auth are the browser-generated encryption keys
+  p256dh    String
+  auth      String
+  createdAt DateTime @default(now())
+
+  // Relations
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("users_push_subscriptions")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// COMMUNITY (Schema retained — no API endpoints until v2)
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Community {
+  id          String   @id @default(uuid()) @db.Uuid
+  name        String   @db.VarChar(255)
+  description String?  @db.Text
+  avatarUrl   String?
+  isPublic    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Relations
+  members CommunityMember[]
+
+  @@map("communities")
+}
+
+model CommunityMember {
+  id          String        @id @default(uuid()) @db.Uuid
+  userId      String        @db.Uuid
+  communityId String        @db.Uuid
+  role        CommunityRole @default(member)
+  joinedAt    DateTime      @default(now())
+
+  // Relations
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  community Community @relation(fields: [communityId], references: [id], onDelete: Cascade)
+
+  // A user can only belong to a community once
+  @@unique([userId, communityId])
+  @@index([communityId])
+  @@map("community_members")
+}
