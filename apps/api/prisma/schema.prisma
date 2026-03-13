@@ -63,7 +63,23 @@ enum TriggerType {
   streak_recovery     // Streak was reset in the last 48 hours
   completion_dropoff  // 7-day completion rate dropped >20%
   momentum            // 5+ consecutive days completed
+  weekly_reflection   // End-of-week summary prompt
+  educational         // Pre-eligibility nudge (< 5 checkins or < 3 active days)
   fallback            // No specific rule matched
+}
+
+enum PillarType {
+  health
+  learning
+  wealth
+  emotional_spiritual
+  relationships
+}
+
+enum ScorecardClassification {
+  reinforcing
+  neutral
+  conflicting
 }
 
 enum CommunityRole {
@@ -93,6 +109,9 @@ model User {
   insights             AiInsight[]
   pushSubscriptions    UserPushSubscription[]
   communityMemberships CommunityMember[]
+  scorecardEntries     HabitScorecard[]
+  weeklyReviews        WeeklyReview[]
+
 
   @@map("users")
 }
@@ -104,8 +123,13 @@ model UserProfile {
   avatarUrl            String?
   bio                  String?  @db.Text
   onboardingCompleted  Boolean  @default(false)
+  // Identity layer — set during onboarding
+  identityStatement    String?  @db.Text             // "I am becoming a disciplined person"
+  growthIntention      String?  @db.VarChar(500)      // "My focus for this season is..."
+  selectedPillars      PillarType[] @default([])      // Pillars chosen during onboarding
   // Preferences stored as flexible JSON:
   // { notificationsEnabled: boolean, theme: "light"|"dark", weekStartsOn: 0|1 }
+  //   notificationTime: "06:00", weeklyReviewDay: 0, insightTonePreference: "motivational"|"analytical" }
   preferences          Json     @default("{}")
   createdAt            DateTime @default(now())
   updatedAt            DateTime @updatedAt
@@ -147,6 +171,10 @@ model Habit {
   goalId String @db.Uuid
 
   title   String        @db.VarChar(255)
+  // Pillar grouping — which life area this habit belongs to
+  pillar           PillarType?
+  // Keystone habit — one per user, gets extra dashboard prominence
+  isKeystone       Boolean       @default(false)
   // frequency determines the schedule type
   frequency        FrequencyType @default(daily)
   // frequencyDetails stores schedule specifics as JSON:
@@ -154,6 +182,11 @@ model Habit {
   // weekly:  { "daysOfWeek": [1,3,5] }  (0=Sun, 1=Mon, ... 6=Sat)
   // custom:  { "intervalDays": 2 }
   frequencyDetails Json          @default("{}")
+  // Implementation intention fields (Epic 4.2)
+  scheduledTime    String?       @db.VarChar(5)       // "07:00" — HH:MM 24h
+  habitStackTrigger String?      @db.VarChar(500)     // "After I brew my morning coffee..."
+  // Estimated duration in minutes — used for friction guard (Epic 4.3)
+  estimatedDuration Int?  
   isArchived       Boolean       @default(false)
   createdAt        DateTime      @default(now())
   updatedAt        DateTime      @updatedAt
@@ -163,6 +196,7 @@ model Habit {
   goal     Goal      @relation(fields: [goalId], references: [id], onDelete: Cascade)
   checkins Checkin[]
   streak   Streak?
+  scorecardEntries HabitScorecard[]
 
   @@index([userId])
   @@index([goalId])
@@ -194,6 +228,9 @@ model Streak {
   longestStreak  Int       @default(0)
   // lastCheckinDate used by Midnight Sweep to detect missed days
   lastCheckinDate DateTime? @db.Date
+  // Streak recovery window (Epic 6.2) — once per week grace period
+  weeklyRecoveryUsed Boolean  @default(false)
+  lastRecoveryDate   DateTime? @db.Date
   updatedAt      DateTime  @updatedAt
 
   // Relations
@@ -280,6 +317,51 @@ model UserPushSubscription {
 
   @@index([userId])
   @@map("users_push_subscriptions")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// HABIT SCORECARD (Epic 2.2 — Awareness First)
+// ─────────────────────────────────────────────────────────────────────────────
+
+model HabitScorecard {
+  id               String                   @id @default(uuid()) @db.Uuid
+  userId           String                   @db.Uuid
+  behavior         String                   @db.VarChar(255)
+  classification   ScorecardClassification
+  // Set when the user promotes this entry to a tracked habit
+  convertedHabitId String?                  @db.Uuid
+  createdAt        DateTime                 @default(now())
+  updatedAt        DateTime                 @updatedAt
+
+  user           User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  convertedHabit Habit? @relation(fields: [convertedHabitId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@map("habit_scorecards")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// WEEKLY REVIEW (Epic 5.3)
+// One row per user per ISO week — written by the AI nudge worker on Sundays.
+// ─────────────────────────────────────────────────────────────────────────────
+
+model WeeklyReview {
+  id                String      @id @default(uuid()) @db.Uuid
+  userId            String      @db.Uuid
+  weekLabel         String      @db.VarChar(10)  // e.g. "2026-W11"
+  consistencyScore  Int         @default(0)       // Overall completion % for the week
+  bestPillar        PillarType?
+  weakestPillar     PillarType?
+  reflectionPrompt  String?     @db.Text
+  // [{ pillar, total, completed, rate }]
+  pillarBreakdown   Json        @default("[]")
+  createdAt         DateTime    @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, weekLabel])
+  @@index([userId])
+  @@map("weekly_reviews")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
