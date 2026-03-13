@@ -1,0 +1,56 @@
+# ─── Dependencies ────────────────────────────────────────────────────────────
+node_modules/
+.pnp
+.pnp.js
+
+# ─── Build outputs ────────────────────────────────────────────────────────────
+dist/
+build/
+.turbo/
+
+# ─── Environment variables — NEVER commit these ───────────────────────────────
+.env
+.env.local
+.env.*.local
+# Allow example files
+!.env.example
+
+# ─── Prisma ──────────────────────────────────────────────────────────────────
+# Generated client — always regenerated from schema.prisma
+apps/api/node_modules/.prisma/
+
+# ─── Logs ────────────────────────────────────────────────────────────────────
+*.log
+logs/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# ─── Test coverage ───────────────────────────────────────────────────────────
+coverage/
+*.lcov
+
+# ─── OS files ────────────────────────────────────────────────────────────────
+.DS_Store
+.DS_Store?
+._*
+Thumbs.db
+
+# ─── IDE / editor ────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+
+# ─── Vite / web build ────────────────────────────────────────────────────────
+apps/web/dist/
+apps/web/.vite/
+
+# ─── Docker ──────────────────────────────────────────────────────────────────
+# Keep Dockerfiles but ignore local override files
+docker-compose.override.yml

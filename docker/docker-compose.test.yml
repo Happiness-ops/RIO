@@ -1,0 +1,48 @@
+version: '3.9'
+
+# ─────────────────────────────────────────────────────────────────────────────
+# RIO AI — CI Test Infrastructure
+#
+# Spins up ONLY the infrastructure dependencies needed for integration and e2e
+# tests. The application itself runs directly on the CI runner (not in Docker)
+# so Jest output is captured cleanly by GitHub Actions.
+#
+# Usage (in CI):
+#   docker compose -f docker/docker-compose.test.yml up -d
+#   npx prisma migrate deploy
+#   npx jest --selectProjects integration
+#   docker compose -f docker/docker-compose.test.yml down -v
+#
+# Differences from docker-compose.yml:
+#   - No api, workers, or web services
+#   - Postgres uses a separate test database (rio_test)
+#   - No named volumes — everything is ephemeral, destroyed after the run
+#   - Shorter healthcheck intervals — CI machines boot fast
+# ─────────────────────────────────────────────────────────────────────────────
+
+services:
+  postgres-test:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER:     rio_test
+      POSTGRES_PASSWORD: rio_test_pass
+      POSTGRES_DB:       rio_test
+    ports:
+      - '5433:5432'          # Port 5433 avoids conflicts with a local dev postgres on 5432
+    tmpfs:
+      - /var/lib/postgresql/data   # In-memory — faster for CI, no cleanup needed
+    healthcheck:
+      test:     ['CMD-SHELL', 'pg_isready -U rio_test -d rio_test']
+      interval: 2s
+      timeout:  2s
+      retries:  15
+
+  redis-test:
+    image: redis:7-alpine
+    ports:
+      - '6380:6379'          # Port 6380 avoids conflicts with a local dev redis on 6379
+    healthcheck:
+      test:     ['CMD', 'redis-cli', 'ping']
+      interval: 2s
+      timeout:  2s
+      retries:  10
